@@ -1,101 +1,159 @@
-# 파단 패턴 ResNet 파이프라인
+# 파단 패턴 학습 파이프라인
 
-CSV·편집 라벨에서 학습용 배열을 만들고, **축별 bbox+confidence 회귀**를 학습한 뒤, 그 가중치를 특징 추출기로 써서 **Break / Normal 이진 분류**를 학습하는 흐름입니다.
+이 프로젝트의 목적은 전주 측정 데이터를 2D 패턴 이미지로 바꾼 뒤,  
+그 안에서 **파단이 나타나는 위치적 특징을 먼저 안정적으로 학습하고**,  
+그 다음 그 특징을 바탕으로 **최종적으로 Break / Normal을 판별하는 모델**을 만드는 것입니다. 
 
-## 전체 구성 (실행 순서)
-
-| 단계 | 스크립트 | 한 줄 요약 |
-|------|-----------|------------|
-| 1 | `6. training_data_bbox_extracted.py` | `4. merge_data`, `9. edit_data` → `5. train_data/`에 `npy` 생성 |
-| 2 | `7. train_break_pattern_resnet_bbox_confidence.py` | 동일 2D 입력으로 **x/y/z 축별** bbox+confidence ResNet 학습 |
-| 3 | `8. train_break_pattern_resnet_binary_from_bbox.py` | 7번 체크포인트 3개를 **고정 백본**으로 이진 분류기 학습 |
-
-구버전·실험용 코드는 로컬 `_archive/`에 둘 수 있습니다 (Git 비포함).
-
----
-
-## `7. train_break_pattern_resnet_bbox_confidence.py` (bbox + confidence)
-
-### 역할
-
-**파단 여부와 무관하게**, 2D 패턴 이미지 한 장(`304×19×3` 등, `6`번에서 만든 형식)을 보고 **각 ROI 축(x, y, z)마다** “상자가 어디 있는지”와 “그 예측을 얼마나 믿을지”를 동시에 맞추는 **회귀(+신뢰도) 단계**입니다.  
-즉, **클래스 Break/Normal을 직접 예측하는 스크립트가 아니라**, 이후 단계나 후처리에서 쓰일 **공간 위치 표현**을 학습합니다.
-
-### 입력·출력
-
-- **입력 디렉터리**: `5. train_data/train`, `5. train_data/test`
-  - `break_imgs_train.npy`, `break_imgs_test.npy`: 샘플 수 × 높이 × 폭 × 채널
-  - `break_labels_train.npy`, `break_labels_test.npy`: 첫 열은 클래스 등 메타, 나머지는 **bbox·마스크가 `K`개 ROI × 축별로 펼쳐진 벡터** (`y` 길이 `1 + 15×K` 구조, 스크립트 내 `slice_roi_targets` 참고)
-- **모델**: 축마다 **독립된 ResNet18 유사** 네트워크 3개 (`model_x`, `model_y`, `model_z`).
-- **헤드 출력 차원**: ROI마다 **5개 값 × 예측 슬롯 수 `P`** — `(hc, hw, dc, dw)` 정규화 박스 + **confidence** 한 채널.
-- **손실**: bbox 쪽은 GT 박스와의 매칭에 기반한 **Huber(best-pair)** 스타일; confidence는 **BCE**. 코드 상단 `CONF_WEIGHT`, `IOU_THRESHOLD_FOR_CONF`로 confidence 항 가중·IoU 조건을 조절합니다.
-- **증강**: `USE_AUGMENTATION`이 켜지면 학습 시에만 밝기·대비·가우시안 노이즈·작은 이동 등(좌우/상하 플립 관련 코드는 주석 처리된 구간이 있음).
-
-### 저장되는 것
-
-- **`7. resnet_runs/checkpoints/`**
-  - `best_x.keras`, `best_y.keras`, `best_z.keras` — 축별 최적 가중치
-- 학습 로그·그래프 등은 같은 `7. resnet_runs/` 트리 아래에 쌓입니다(`.gitignore`로 원격 미포함).
-
-### 실행 환경 메모
-
-- **Windows**: 기본 경로는 WSL2로 GPU 학습을 넘기도록 되어 있고, **로컬에서 직접 돌리려면** `--local`을 주거나, Linux/WSL에서는 보통 로컬 경로로 바로 학습합니다.
-- **구버전 체크포인트**: docstring대로 **4×P 형태의 옛 체크포인트와는 호환되지 않습니다.** 반드시 이 스크립트로 다시 학습해야 합니다.
+핵심은 처음부터 바로 이진 분류만 시키지 않는다는 점입니다.  
+먼저 모델이 **어디를 봐야 하는지**를 배우게 하고,  
+그 다음에 **그 특징을 이용해 실제 판단**을 하게 나눠 두었습니다.  
+이렇게 분리한 이유는 파단 위치와 형태를 먼저 학습시키면,  
+최종 분류 단계가 더 안정적으로 동작할 수 있기 때문입니다.  
+특히 1차 학습에서는 bbox와 함께 confidence를 따로 학습하여,  
+모델이 “어디가 중요한지”와 “그 예측을 얼마나 믿을 수 있는지”를 함께 익히도록 구성되어 있습니다. 
 
 ---
 
-## `8. train_break_pattern_resnet_binary_from_bbox.py` (이진 분류, bbox 특징 기반)
+## 전체 흐름
 
-### 역할
+이 파이프라인은 크게 세 단계로 구성됩니다.
 
-**7번에서 이미 학습된 x/y/z 세 모델**을 “특징 추출기”로만 쓰고, 그 위에 **Break vs Normal 이진 분류 헤드**를 얹어 학습합니다.  
-입력 이미지는 7번과 **동일한 `npy`**, 라벨은 **`y[:, 0]`의 클래스**만 사용합니다.
+### 1. 학습 데이터 생성
+원본 측정 CSV와 편집된 ROI 정보를 이용해,  
+모델이 바로 사용할 수 있는 학습용 배열(`.npy`)을 만드는 단계입니다.
 
-### 7번과의 관계
-
-1. **`7. resnet_runs/checkpoints/best_{x,y,z}.keras`가 반드시 존재**해야 합니다. 없으면 `build_frozen_backbone`에서 `FileNotFoundError`가 납니다.
-2. 각 체크포인트 전체 모델에서 **GlobalAveragePooling 직전(또는 `_gap` 레이어) 출력**까지를 잘라 **동결 서브모델**로 만듭니다(`trainable=False`).
-3. 세 축의 512차원 특징을 **투영(256) → 축 게이트(softmax 3)** 로 가중합한 뒤, 원본 512×3·가중 특징·게이트를 **concat**하여 MLP로 **sigmoid 1출력** 분류기를 구성합니다(`build_binary_classifier`).
-
-### 학습 절차 요약
-
-- **교차 검증 느낌의 split**: `StratifiedShuffleSplit`으로 여러 번 나눠 각 split마다 `split_{id}/best_binary.keras` 등을 저장.
-- **각 split 내 2단계**: (1) 백본 동결·헤드만 `HEAD_LR`로 짧게, (2) 마지막 스테이지 일부만 풀고 `FT_LR`로 파인튜닝(`set_backbone_trainability`).
-- **클래스 가중**: break 쪽에 더 큰 가중(`class_weight` 1 vs 4).
-- **검증 목표**: `TARGET_PRECISION`, `TARGET_RECALL`에 맞춰 threshold를 찾고, 그에 맞는 `val_target_score` 등으로 체크포인트·얼리스탑(`DelayedModelCheckpoint`, `DelayedEarlyStopping`, `ValidationConstraintMetric`).
-
-### 저장되는 것
-
-- **`7. resnet_runs_binary/`** (이름은 `7.`으로 시작하지만 내용은 8번 전용 실행 결과)
-  - `checkpoints/split_*/best_binary.keras`, `final_retrain/best_final_binary.keras` 등
-  - TensorBoard 로그, 히스토리 플롯·JSON
-
-역시 `.gitignore`에 있어 Git에는 올리지 않습니다.
+이 단계에서는 `4. merge_data`에 있는 측정 CSV를 읽고,  
+`9. edit_data`에 있는 ROI 정보를 함께 사용해서  
+`5. train_data` 아래에 학습용 입력 이미지와 라벨을 저장합니다.  
+즉, 이후 학습 단계에서 쓰이는 데이터의 기준을 만드는 준비 단계입니다. 
 
 ---
 
-## 환경
+## 1차 학습: 위치 특징 학습
 
-- **Python**: 3.12 권장 (`requirements.txt` 주석 기준)
-- **설치**
+이 단계의 목적은 **파단 여부를 바로 맞히는 것**이 아니라,  
+입력 패턴 안에서 **파단과 관련된 위치적 특징을 먼저 배우는 것**입니다. 
 
-```bash
-pip install -r requirements.txt
-```
+모델은 하나가 아니라 **x / y / z 축별로 각각 따로 학습**됩니다.  
+각 네트워크는 자신이 담당하는 축에서  
+파단 후보 영역의 위치와 크기를 예측하고,  
+동시에 그 예측이 얼마나 믿을 만한지도 함께 학습합니다.  
+여기서 confidence를 따로 두는 이유는,  
+모델이 단순히 위치만 찍는 것이 아니라  
+**확실한 예측과 불확실한 예측을 구분할 수 있게 하기 위해서**입니다.  
+이 과정은 이후 최종 분류 단계에서 더 안정적인 특징을 제공하는 역할을 합니다. 
 
-- **GPU**: TensorFlow 2.16+에 맞는 CUDA 설치 ([TensorFlow 설치 가이드](https://www.tensorflow.org/install))
+정리하면, 1차 학습은  
+**“파단이 어디에 어떻게 나타나는가”를 배우는 단계**입니다.
 
-## 데이터 디렉터리 (Git 제외)
+### 1차 학습 결과
+1차 학습이 끝나면 축별 최적 가중치가 저장됩니다.
 
-- `4. merge_data/`, `9. edit_data/` — `6`번 입력
-- `5. train_data/` — `6` 실행 후 생성; **`7`, `8`의 공통 입력**
+- `best_x.keras`
+- `best_y.keras`
+- `best_z.keras`
 
-## 실행 예시 (저장소 루트에서)
+이 가중치들은 이후 2차 학습의 기반이 됩니다. :contentReference[oaicite:6]{index=6}
 
-```bash
-python "6. training_data_bbox_extracted.py"
-python "7. train_break_pattern_resnet_bbox_confidence.py"
-python "8. train_break_pattern_resnet_binary_from_bbox.py"
-```
+---
 
-- Windows에서 7번만 **WSL 위임** 동작이 있을 수 있으니, 로컬 GPU로 돌릴 때는 `--local` 또는 Linux/WSL 환경을 사용합니다.
+## 2차 학습: 최종 판별 학습
+
+2차 학습의 목적은  
+1차 학습에서 얻은 축별 특징을 이용해  
+입력 샘플이 **Break인지 Normal인지 최종 판별**하는 것입니다. 
+
+여기서는 1차 학습에서 만든 x / y / z 모델을  
+새로 처음부터 다시 배우게 하지 않고,  
+이미 학습된 특징 추출기로 활용합니다.  
+즉, 1차 학습이 **위치와 패턴 이해**를 맡고,  
+2차 학습이 **최종 의사결정**을 맡는 구조입니다. 
+
+이렇게 나눈 이유는 명확합니다.
+
+처음부터 Break / Normal만 바로 분류하게 하면  
+모델이 어떤 위치 정보를 근거로 판단해야 하는지 불안정해질 수 있습니다.  
+반면 먼저 위치적 특징을 충분히 학습한 뒤,  
+그 특징을 기반으로 최종 판정을 하게 하면  
+분류 단계가 더 일관되고 해석 가능한 방향으로 학습될 수 있습니다. 
+
+정리하면, 2차 학습은  
+**“1차 학습이 찾아낸 특징을 이용해 최종적으로 파단 여부를 판단하는 단계”**입니다.
+
+---
+
+## 왜 1차 학습과 2차 학습을 나눴는가
+
+이 프로젝트는 단순 분류보다  
+**위치 이해 → 최종 판별**의 순서를 더 중요하게 봅니다.
+
+1차 학습에서는  
+파단 후보 영역의 위치와 신뢰도를 학습하면서  
+모델이 어디를 봐야 하는지 먼저 익힙니다.
+
+2차 학습에서는  
+그렇게 얻은 축별 특징을 조합해서  
+실제 Break / Normal 판정을 수행합니다.
+
+즉, 이 구조는  
+**위치 정보를 먼저 안정적으로 학습한 뒤,  
+그 특징을 이용해 최종 분류 성능을 높이기 위한 설계**입니다. 
+
+---
+
+## 데이터가 어떻게 쓰이는가
+
+이 프로젝트에서 학습에 직접 쓰이는 입력은  
+최종적으로 `5. train_data`에 저장된 `.npy` 데이터입니다.  
+이 데이터는 원본 측정 CSV만 그대로 쓰는 것이 아니라,  
+전처리와 ROI 정보 반영을 거친 뒤 만들어집니다. 
+
+- 원본 측정 데이터: `4. merge_data`
+- ROI 및 편집 정보: `9. edit_data`
+- 학습용 배열 저장 위치: `5. train_data`
+
+따라서 1차 학습과 2차 학습은 모두  
+같은 학습용 배열을 입력으로 사용하지만,  
+배우는 목표는 서로 다릅니다.  
+1차는 위치 특징을 배우고,  
+2차는 그 특징으로 최종 판별을 수행합니다. 
+
+---
+
+## 최종모델 폴더
+
+`최종모델` 폴더에는 최종적으로 선택한 가중치가 정리되어 있으며,  
+**파인튜닝 전**과 **파인튜닝 후**로 나누어 보관되어 있습니다.  
+그리고 각 단계마다 축별 모델인 `best_x.keras`, `best_y.keras`, `best_z.keras`가 저장되어 있습니다. :contentReference[oaicite:13]{index=13}
+
+이 구조는  
+파인튜닝을 하기 전의 기본 특징 추출 상태와,  
+파인튜닝을 거친 뒤의 최종 상태를 분리해서 비교하거나 관리하기 쉽게 하기 위한 것입니다. :contentReference[oaicite:14]{index=14}
+
+---
+
+## 파일별 의미
+
+### 학습 데이터 생성
+- `6. training_data_bbox_extracted.py`  
+  원본 측정 데이터와 ROI 정보를 묶어 학습용 `.npy`를 생성하는 단계입니다.  
+  쉽게 말해, **모델이 읽을 수 있는 형태로 데이터를 정리하는 역할**을 합니다. 
+
+### 1차 학습
+- `7. train_break_pattern_resnet_bbox_confidence.py`  
+  x / y / z 축별 네트워크가 파단 후보 위치와 confidence를 학습하는 단계입니다.  
+  쉽게 말해, **모델이 어디를 봐야 하는지 먼저 배우는 역할**을 합니다. 
+
+### 2차 학습
+- `8. train_break_pattern_resnet_binary_from_bbox.py`  
+  1차 학습에서 얻은 특징을 이용해 Break / Normal을 최종 분류하는 단계입니다.  
+  쉽게 말해, **배운 특징을 바탕으로 최종 판단을 내리는 역할**을 합니다. 
+
+---
+
+## 한 줄로 요약하면
+
+이 프로젝트는  
+**데이터를 학습용 형태로 정리한 뒤,  
+먼저 파단 위치와 신뢰도를 학습하고,  
+그 다음 그 특징을 이용해 최종적으로 파단 여부를 판별하는 2단계 구조의 파이프라인**입니다. 
