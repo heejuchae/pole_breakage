@@ -49,3 +49,6 @@ _archive/
 
 # 개인 메모
 메모장.txt
+
+# 로컬 백업본 (Git에 올리지 않음)
+* backup.py
