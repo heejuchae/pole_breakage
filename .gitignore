@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.lnk
+
+# Large binaries & installers
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.deb
+
+# Local data & labels (npy/csv 등 — Git에 안 올림)
+4. merge_data/
+4. merge_data_review/
+5. train_data/
+6. models/
+9. edit_data/
+8. evaluation_results/
+11. suspicious_sample_reports/
+20260202-211602/
+최종모델/
+
+# 실험 산출·아카이브
+runs/
+runs_yolo26/
+7. resnet_runs/
+7. resnet_runs_binary/
+7_8_integrated_runs/
+9. multitask_runs/
+eval_bestpair_*/
+eval_test_only_*/
+vis_top_bottom_*/
+debug_compare/
+yolo_break_candidates/
+yolo_break_candidates_axis/
+_archive/
+
+# 개인 메모
+메모장.txt
