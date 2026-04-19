@@ -1,0 +1,51 @@
+# Project requirements
+# Python: 3.12.1
+# Updated: 2025-01-16
+# Install: pip install -r requirements.txt
+# TensorFlow: use >=2.16.1 for Python 3.12 compatibility
+
+# Core
+pandas>=2.1.4,<3.0.0
+numpy>=1.26.4,<2.0.0
+scipy>=1.11.4,<2.0.0
+tqdm>=4.65.0
+PyMySQL>=1.0.2
+openpyxl>=3.0.9
+XlsxWriter>=3.0.3
+
+# Analysis / Simulation
+magpylib>=3.0.2
+scikit-learn>=1.2.2,<2.0.0
+joblib>=1.0.0
+bottleneck>=1.3.2
+PeakUtils>=1.3.3
+
+# Visualization
+matplotlib>=3.8.4,<4.0.0
+pyqtgraph>=0.12.1
+PyQt5>=5.15.1
+PyQt5-sip>=12.8.1
+plotly>=4.0.0
+
+# Web (optional)
+Flask>=1.1.2
+flask-restx>=1.0.5
+
+# Utilities
+requests>=2.24.0
+pytz>=2020.4
+PyYAML>=5.3.1
+schedule>=1.0.0
+
+# Dev tools (optional)
+flake8>=3.8.4
+pylint>=2.6.0
+
+# Deep Learning
+tensorflow>=2.16.1,<3.0.0
+
+# Optional (uncomment if needed)
+# torch>=2.0.0
+# jupyter>=1.0.0
+# ipython>=7.19.0
+# pyspark>=3.0.1
