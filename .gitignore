@@ -52,3 +52,6 @@ _archive/
 
 # 로컬 백업본 (Git에 올리지 않음)
 * backup.py
+
+# 로컬 테스트 스크립트 (저장소에 포함하지 않음)
+9. test_break_pattern_resnet_bbox_confidence.py
