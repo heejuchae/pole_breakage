@@ -76,6 +76,15 @@ def infer_filled_degree_window(degree_series: pd.Series, step: float = 5.0, span
 
     return best["start_deg"], best["bins"]
 
+def has_any_zero_column(img: np.ndarray, zero_eps: float = 1e-6) -> bool:
+    """
+    img: (H, W, 3)
+    한 column 전체가 모든 채널에서 0이면 True
+    """
+    abs_img = np.abs(img)
+    zero_col_mask = np.all(abs_img <= zero_eps, axis=(0, 2))  # (W,)
+    return bool(zero_col_mask.any())
+
 def prepare_sequence_from_csv(
     csv_path: str,
     sort_by: str = 'height',
@@ -155,6 +164,9 @@ def prepare_sequence_from_csv(
 
     img = np.stack([x_grid, y_grid, z_grid], axis=-1).astype(np.float32)
 
+    # 완전 0 열이 하나라도 있으면 버림
+    if has_any_zero_column(img, zero_eps=1e-6):
+        return None
 
     metadata = {
         'grid_shape': img.shape,
@@ -804,13 +816,32 @@ print("bbox NaN count:", int(nan_cnt), "Inf count:", int(inf_cnt))
 oob = (bbox < 0.0) | (bbox > 1.0)
 print("bbox out-of-bound count:", int(oob.sum()))
 
-# ✅ 3) "bbox가 실제로 채워져 있나?" (width가 0이면 사실상 empty로 봄)
-# bbox format: [hc, hw, dc, dw]
-hw = bbox[:, :, 1]
-dw = bbox[:, :, 3]
+# ✅ 3) "bbox가 실제로 채워져 있나?" 확인
+# bbox shape: (B, 3, K, 4)
+# 마지막 축 4개가 [hc, hw, dc, dw] 이므로
+# hw, dw는 마지막 축에서 뽑아야 함
+hw = bbox[:, :, :, 1]
+dw = bbox[:, :, :, 3]
 non_empty = (hw > 0) & (dw > 0)
-print("non-empty bbox per channel in batch (counts):", non_empty.sum(axis=0))  # (3,)
-print("non-empty bbox per sample in batch (first 10):", non_empty.sum(axis=1)[:10])
+
+# print("non-empty bbox per channel in batch (counts):", non_empty.sum(axis=(0, 2)))   # (3,)
+# print("non-empty bbox per sample in batch (first 10):", non_empty.sum(axis=(1, 2))[:10])
+
+# # ✅ mask 기준과 같이 비교
+# print("mask-based non-empty per channel:", mask.sum(axis=(0, 2)))
+# print("mask-based non-empty per sample (first 10):", mask.sum(axis=(1, 2))[:10])
+
+# # ✅ 실제 존재하는 bbox만 따로 보기
+# valid_bbox = bbox[mask > 0]   # (num_valid_boxes, 4)
+# print("valid bbox count:", len(valid_bbox))
+
+# if len(valid_bbox) > 0:
+#     print("valid bbox min/max:", valid_bbox.min(), valid_bbox.max())
+#     print("valid hw min/max:", valid_bbox[:, 1].min(), valid_bbox[:, 1].max())
+#     print("valid dw min/max:", valid_bbox[:, 3].min(), valid_bbox[:, 3].max())
+#     print("valid bbox first 10:\n", valid_bbox[:10])
+# else:
+#     print("no valid bbox in this batch")
 
 # ✅ 4) 샘플 하나 보기
 i = 0
